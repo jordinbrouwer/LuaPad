@@ -1,0 +1,34 @@
+## Interface: 120100, 120005, 120007, 16001
+
+## Title: LuaPad
+## Notes: Paste and run your own Lua snippets, with line-accurate error reporting.
+## IconTexture: Interface\AddOns\LuaPad\LuaPad
+## Version: @project-version@
+## Author: Jordin
+
+## DefaultState: enabled
+## LoadOnDemand: 0
+## SavedVariables: LuaPadDB
+
+UI/Widgets.lua
+UI/ReloadPopup.lua
+UI/ErrorToast.lua
+Modes/Code/Syntax.lua
+Modes/Code/Lint.lua
+Modes/Simple/Options.lua
+Modes/Simple/Generator.lua
+Modes/Simple/Effects.lua
+Core/Runtime.lua
+Core/Snippets.lua
+Modes/Simple/Panel.lua
+Modes/Simple/Fields.lua
+Modes/Simple/WhenStep.lua
+Modes/Simple/OnlyIfStep.lua
+Modes/Simple/ThenStep.lua
+Modes/Code/Editor.lua
+UI/StatusPanel.lua
+UI/SnippetList.lua
+UI/Toolbar.lua
+UI/Window.lua
+Core/Commands.lua
+UI/Settings.lua
