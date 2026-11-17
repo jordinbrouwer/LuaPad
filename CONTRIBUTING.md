@@ -16,7 +16,7 @@ Contributions are welcome and appreciated.
 
 ## Run checks locally
 
-Use these before opening a PR (`luacheck` is required for lint, `zip` for the release dry-run):
+Use these before opening a PR (`luacheck` is required for lint, `shellcheck` for shell, `zip` for the release dry-run):
 
 - Fast structural pass:
   - `bash ./scripts/check.sh quick`
@@ -24,3 +24,4 @@ Use these before opening a PR (`luacheck` is required for lint, `zip` for the re
   - `bash ./scripts/check.sh all`
 - Individual modes:
   - `bash ./scripts/check.sh --help`
+- CI runs every mode listed by `bash ./scripts/check.sh list` as its own job, so a new `scripts/check/<name>.sh` is picked up automatically. Tag releases (CD) run the same checks before packaging.
