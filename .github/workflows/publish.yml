@@ -1,6 +1,8 @@
 name: Publish
 run-name: "Publish: ${{ github.ref_name }}"
 
+# A version tag (pushed by hand, or started by Release) becomes a GitHub Release and a CurseForge upload.
+# Run by hand on a branch, it only builds the package; the two publish jobs show as skipped.
 on:
   push:
     tags: ["[0-9]+.[0-9]+.[0-9]+"]
@@ -15,77 +17,98 @@ permissions:
 
 jobs:
   checks:
-    name: Checks
+    name: ✅ Checks
     uses: ./.github/workflows/checks.yml
 
-  publish:
-    name: Package and publish
+  build:
+    name: 📦 Build package
     needs: checks
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
-    permissions:
-      contents: write
+    timeout-minutes: 10
+    outputs:
+      version: ${{ steps.package.outputs.version }}
+      archive_path: ${{ steps.package.outputs.archive_path }}
+      notes_path: ${{ steps.package.outputs.notes_path }}
     steps:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
-      - name: Prepare and package release
-        id: release
+      - name: Package the addon
+        id: package
         run: bash ./scripts/release.sh "$GITHUB_OUTPUT" "$GITHUB_REF" "$GITHUB_REF_NAME"
-      - name: Upload build artifact
-        uses: actions/upload-artifact@v7
-        with:
-          name: ${{ github.event.repository.name }}-${{ steps.release.outputs.archive_version }}
-          path: ${{ steps.release.outputs.archive_path }}
-          retention-days: 7
-      - name: Validate release outputs
-        if: startsWith(github.ref, 'refs/tags/')
+      - name: Check the package
         env:
-          NOTES_PATH: ${{ steps.release.outputs.notes_path }}
-          ARCHIVE_PATH: ${{ steps.release.outputs.archive_path }}
+          VERSION: ${{ steps.package.outputs.version }}
+          NOTES_PATH: ${{ steps.package.outputs.notes_path }}
+          ARCHIVE_PATH: ${{ steps.package.outputs.archive_path }}
         run: |
-          test -n "$NOTES_PATH"
-          test -f "$NOTES_PATH"
-          test -n "$ARCHIVE_PATH"
           test -f "$ARCHIVE_PATH"
-      - name: Print release outputs
-        env:
-          VERSION: ${{ steps.release.outputs.version }}
-          ARCHIVE_VERSION: ${{ steps.release.outputs.archive_version }}
-          ARCHIVE_PATH: ${{ steps.release.outputs.archive_path }}
-        run: |
-          echo "version=$VERSION"
-          echo "archive_version=$ARCHIVE_VERSION"
-          echo "archive_path=$ARCHIVE_PATH"
+          # Release notes are only written for a tag.
+          if [ "$GITHUB_REF_TYPE" = tag ]; then test -f "$NOTES_PATH"; fi
+          bash ./scripts/check.sh worktree-clean
           {
-            echo "### Release package"
+            echo "### Package"
             echo ""
             echo "| Key | Value |"
             echo "| --- | --- |"
             echo "| version | \`$VERSION\` |"
             echo "| archive | \`$ARCHIVE_PATH\` |"
           } >> "$GITHUB_STEP_SUMMARY"
-      - name: Ensure tracked tree is clean after packaging
-        run: bash ./scripts/check.sh worktree-clean
-      - name: Build the CurseForge description
-        if: startsWith(github.ref, 'refs/tags/')
+      - name: Upload the package
+        uses: actions/upload-artifact@v7
+        with:
+          name: package
+          # Both files live in .tmp/, so the artifact keeps their names and the publish jobs restore them there.
+          path: |
+            ${{ steps.package.outputs.archive_path }}
+            ${{ steps.package.outputs.notes_path }}
+          retention-days: 7
+
+  github-release:
+    name: 🐙 GitHub release
+    needs: build
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: actions/download-artifact@v7
+        with:
+          name: package
+          path: .tmp
+      - name: Write the CurseForge description
         run: bash ./scripts/curseforge-description.sh "$GITHUB_REF_NAME" .tmp/curseforge-description.md
-      - name: Create release and upload archive
-        if: startsWith(github.ref, 'refs/tags/')
+      - name: Create the release
         uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ github.ref_name }}
-          name: ${{ steps.release.outputs.version }}
-          body_path: ${{ steps.release.outputs.notes_path }}
+          name: ${{ needs.build.outputs.version }}
+          body_path: ${{ needs.build.outputs.notes_path }}
           files: |
-            ${{ steps.release.outputs.archive_path }}
+            ${{ needs.build.outputs.archive_path }}
             .tmp/curseforge-description.md
-      - name: Publish to CurseForge
-        if: startsWith(github.ref, 'refs/tags/')
+
+  curseforge:
+    name: 🔥 CurseForge upload
+    needs: build
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v7
+        with:
+          name: package
+          path: .tmp
+      - name: Upload to CurseForge
         env:
           CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
           CF_PROJECT_ID: ${{ secrets.CF_PROJECT_ID }}
-          ARCHIVE_PATH: ${{ steps.release.outputs.archive_path }}
-          NOTES_PATH: ${{ steps.release.outputs.notes_path }}
-          VERSION: ${{ steps.release.outputs.version }}
+          ARCHIVE_PATH: ${{ needs.build.outputs.archive_path }}
+          NOTES_PATH: ${{ needs.build.outputs.notes_path }}
+          VERSION: ${{ needs.build.outputs.version }}
         run: bash ./scripts/publish-curseforge.sh "$ARCHIVE_PATH" "$NOTES_PATH" "$VERSION"

@@ -20,13 +20,40 @@ concurrency:
 
 jobs:
   checks:
-    name: Checks
+    name: ✅ Checks
     uses: ./.github/workflows/checks.yml
 
-  release:
-    name: Version and tag
-    needs: checks
+  # Runs next to Checks, so "Tag release" is skipped up front when there is nothing to release.
+  plan:
+    name: 🧭 Next version
     if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.next.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Read the commits since the last release
+        id: next
+        env:
+          BUMP: ${{ inputs.bump || 'auto' }}
+        run: |
+          set -euo pipefail
+          # Only edits this runner's copy of CHANGELOG.md; "Tag release" writes it again.
+          version="$(python3 ./scripts/next-release.py --bump "$BUMP")"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          if [ -n "$version" ]; then
+            echo "Next release: \`$version\`." | tee -a "$GITHUB_STEP_SUMMARY"
+          else
+            echo "No feat, fix or breaking commits in \`src/\` since the last release. Nothing to release." | tee -a "$GITHUB_STEP_SUMMARY"
+          fi
+
+  release:
+    name: 🏷️ Tag release
+    needs: [checks, plan]
+    if: needs.plan.outputs.version != ''
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
@@ -40,12 +67,13 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           BUMP: ${{ inputs.bump || 'auto' }}
+          PLANNED: ${{ needs.plan.outputs.version }}
         run: |
           set -euo pipefail
           tag="$(python3 ./scripts/next-release.py --bump "$BUMP")"
-          if [ -z "$tag" ]; then
-            echo "No feat, fix or breaking commits in \`src/\` since the last release. Nothing to release." | tee -a "$GITHUB_STEP_SUMMARY"
-            exit 0
+          if [ "$tag" != "$PLANNED" ]; then
+            echo "::error::Planned $PLANNED but got '$tag' on the same commit."
+            exit 1
           fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"

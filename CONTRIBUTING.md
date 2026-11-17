@@ -32,11 +32,11 @@ Use these before opening a PR (`luacheck` is required for lint, `shellcheck` for
 | --- | --- | --- |
 | `Checks` (`checks.yml`) | pull requests, by hand, and first inside Release and Publish | all checks |
 | `Release` (`release.yml`) | push to `main`, by hand | Checks, then a new version, changelog and tag when the commits ask for it |
-| `Publish` (`publish.yml`) | a `1.2.3` tag, started by Release or pushed by hand | Checks, then the GitHub Release and the CurseForge upload |
+| `Publish` (`publish.yml`) | a `1.2.3` tag, started by Release or pushed by hand | Checks and `📦 Build package`, then `🐙 GitHub release` and `🔥 CurseForge upload` (skipped when not run on a tag) |
 
 ## Releases
 
-Releases are automatic. After the checks pass on `main`, the `Release` workflow reads the commits since the last tag that change `src/`. Commits that only touch docs, scripts or workflows never release, whatever their type:
+Releases are automatic. After the checks pass on `main`, the `Release` workflow reads the commits since the last tag that change `src/`. Commits that only touch docs, scripts or workflows never release, whatever their type. The `🧭 Next version` job works this out next to the checks, so with nothing to release `🏷️ Tag release` shows as skipped:
 
 | Commit | Next version | Changelog section |
 | --- | --- | --- |

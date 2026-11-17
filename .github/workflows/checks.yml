@@ -14,14 +14,14 @@ concurrency:
 
 jobs:
   discover:
-    name: List checks
+    name: 🔎 Find checks
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     outputs:
       checks: ${{ steps.list.outputs.checks }}
     steps:
       - uses: actions/checkout@v7
-      - name: List check modes
+      - name: List scripts/check/
         id: list
         run: |
           checks="$(bash ./scripts/check.sh list | jq -R . | jq -sc .)"
