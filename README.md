@@ -2,6 +2,9 @@
 
 Paste and run your own Lua snippets in game, with line-accurate error reporting. Or build simple rules without writing any code.
 
+<!-- release:start -->
+<!-- release:end -->
+
 <img src="docs/images/1-editor.png" alt="Editor: the snippet list, a code editor with line numbers and live checks next to it." width="320">
 
 ## Usage

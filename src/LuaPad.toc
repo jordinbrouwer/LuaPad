@@ -5,6 +5,7 @@
 ## IconTexture: Interface\AddOns\LuaPad\LuaPad
 ## Version: @project-version@
 ## Author: Jordin
+## X-Website: https://www.curseforge.com/wow/addons/lua-pad
 
 ## DefaultState: enabled
 ## LoadOnDemand: 0

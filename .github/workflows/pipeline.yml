@@ -1,0 +1,337 @@
+name: Pipeline
+run-name: >-
+  ${{ github.ref_type == 'tag' && format('Publish {0}', github.ref_name)
+  || github.event_name == 'workflow_dispatch' && format('Run by hand on {0}', github.ref_name)
+  || github.event.pull_request.title || github.event.head_commit.message }}
+
+on:
+  pull_request:
+  push:
+    branches: [main, master]
+    tags: ["[0-9]+.[0-9]+.[0-9]+"]
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: "On the default branch: auto follows the commits; patch, minor and major force at least that bump."
+        type: choice
+        options: [auto, patch, minor, major]
+        default: auto
+
+permissions:
+  contents: read
+
+env:
+  TOC: src/LuaPad.toc
+
+concurrency:
+  group: pipeline-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  find:
+    name: 🔎 Find checks
+    env:
+      LOG_PREFIX: Find checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      checks: ${{ steps.list.outputs.checks }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: List scripts/checks/
+        id: list
+        run: |
+          checks="$(python3 scripts/checks/run.py list | jq -R . | jq -sc .)"
+          echo "[$LOG_PREFIX] Checks: $checks"
+          echo "checks=$checks" >> "$GITHUB_OUTPUT"
+
+  checks:
+    name: ✅ Checks
+    env:
+      LOG_PREFIX: Checks (${{ matrix.check }})
+    needs: find
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        check: ${{ fromJSON(needs.find.outputs.checks) }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install Luacheck
+        if: matrix.check == 'lint'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends lua-check
+      - name: Run ${{ matrix.check }} check
+        env:
+          CHECK_MODE: ${{ matrix.check }}
+        run: python3 scripts/checks/run.py "$CHECK_MODE"
+
+  next-version:
+    name: 🧭 Next version
+    env:
+      LOG_PREFIX: Next version
+    if: github.ref_name == github.event.repository.default_branch && github.event_name != 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.next.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Read the commits since the last release
+        id: next
+        env:
+          BUMP: ${{ inputs.bump || 'auto' }}
+        run: |
+          set -euo pipefail
+          version="$(python3 scripts/next-version.py --bump "$BUMP")"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          if [ -n "$version" ]; then
+            echo "[$LOG_PREFIX] Next release: $version."
+          else
+            echo "[$LOG_PREFIX] No feat, fix or breaking commits in src/ since the last release. Nothing to release."
+          fi
+
+  tag-release:
+    name: 🏷️ Tag release
+    env:
+      LOG_PREFIX: Tag release
+    needs: [checks, next-version]
+    if: needs.next-version.outputs.version != ''
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      actions: write
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Tag the release and start publishing
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BUMP: ${{ inputs.bump || 'auto' }}
+          PLANNED: ${{ needs.next-version.outputs.version }}
+        run: |
+          set -euo pipefail
+          tag="$(python3 scripts/next-version.py --bump "$BUMP")"
+          if [ "$tag" != "$PLANNED" ]; then
+            echo "::error::[$LOG_PREFIX] Planned $PLANNED but got '$tag' on the same commit."
+            exit 1
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -qam "chore(release): $tag"
+          git tag "$tag"
+          git push --atomic origin "HEAD:refs/heads/$GITHUB_REF_NAME" "refs/tags/$tag" 2>&1 | sed "s/^/[$LOG_PREFIX] /"
+          gh workflow run pipeline.yml --ref "$tag"
+          echo "[$LOG_PREFIX] Tagged $tag and started the pipeline on it."
+
+  build:
+    name: 📦 Build package
+    env:
+      LOG_PREFIX: Build package
+    needs: checks
+    if: github.ref_type == 'tag' || (github.event_name == 'workflow_dispatch' && github.ref_name != github.event.repository.default_branch)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      version: ${{ steps.package.outputs.version }}
+      archive_path: ${{ steps.package.outputs.archive_path }}
+      notes_path: ${{ steps.package.outputs.notes_path }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Package the addon
+        id: package
+        run: python3 scripts/build-package.py "$GITHUB_OUTPUT" "$GITHUB_REF" "$GITHUB_REF_NAME"
+      - name: Check the package
+        env:
+          NOTES_PATH: ${{ steps.package.outputs.notes_path }}
+          ARCHIVE_PATH: ${{ steps.package.outputs.archive_path }}
+        run: |
+          test -f "$ARCHIVE_PATH"
+          if [ "$GITHUB_REF_TYPE" = tag ]; then test -f "$NOTES_PATH"; fi
+          python3 scripts/checks/run.py worktree-clean
+      - name: Upload the package
+        uses: actions/upload-artifact@v7
+        with:
+          name: package
+          path: |
+            ${{ steps.package.outputs.archive_path }}
+            ${{ steps.package.outputs.notes_path }}
+          retention-days: 7
+
+  publish-release:
+    name: 🐙 Publish release
+    needs: build
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: actions/download-artifact@v7
+        with:
+          name: package
+          path: .tmp
+      - name: Create the release
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: ${{ needs.build.outputs.version }}
+          body_path: ${{ needs.build.outputs.notes_path }}
+          files: ${{ needs.build.outputs.archive_path }}
+
+  curseforge:
+    name: 🔥 CurseForge upload
+    env:
+      LOG_PREFIX: CurseForge upload
+    needs: build
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v7
+        with:
+          name: package
+          path: .tmp
+      - name: Upload to CurseForge
+        env:
+          CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          CF_PROJECT_ID: ${{ secrets.CF_PROJECT_ID }}
+          ARCHIVE_PATH: ${{ needs.build.outputs.archive_path }}
+          NOTES_PATH: ${{ needs.build.outputs.notes_path }}
+          VERSION: ${{ needs.build.outputs.version }}
+        run: python3 scripts/curseforge-upload.py "$ARCHIVE_PATH" "$NOTES_PATH" "$VERSION"
+
+  curseforge-info:
+    name: 📝 Update CurseForge information
+    needs: [build, publish-release, curseforge]
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    env:
+      LOG_PREFIX: Update CurseForge information
+      VERSION: ${{ needs.build.outputs.version }}
+      BRANCH: ${{ github.event.repository.default_branch }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: actions/download-artifact@v7
+        with:
+          name: package
+          path: .tmp
+      - name: Compare with the previous release
+        id: compare
+        run: |
+          set -euo pipefail
+          python3 scripts/curseforge-information/compare.py "$GITHUB_REF_NAME" | tee .tmp/curseforge.log
+          curseforge=false
+          if grep -q '\] CHANGED:' .tmp/curseforge.log; then curseforge=true; fi
+          readme=true
+          if git show "origin/$BRANCH:README.md" | grep -qF "**Latest release: [$GITHUB_REF_NAME]("; then readme=false; fi
+          echo "curseforge=$curseforge" >> "$GITHUB_OUTPUT"
+          echo "readme=$readme" >> "$GITHUB_OUTPUT"
+      - name: Write the README for CurseForge
+        if: steps.compare.outputs.curseforge == 'true'
+        run: python3 scripts/curseforge-information/write-readme.py "$GITHUB_REF_NAME" .tmp/curseforge-readme.md
+      - name: Attach the files to paste or upload to the release
+        if: steps.compare.outputs.curseforge == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          files=(.tmp/curseforge-readme.md)
+          if grep -q "\] CHANGED: media [AM] ${TOC%.toc}.tga$" .tmp/curseforge.log; then
+            python3 scripts/curseforge-information/convert-avatar.py "${TOC%.toc}.tga" .tmp/curseforge-avatar.png
+            files+=(.tmp/curseforge-avatar.png)
+          fi
+          gh release upload "$GITHUB_REF_NAME" "${files[@]}" --clobber
+      - name: Switch to the default branch
+        if: steps.compare.outputs.readme == 'true'
+        run: git checkout -q -B "$BRANCH" "origin/$BRANCH"
+      - name: Write the README release block
+        if: steps.compare.outputs.readme == 'true'
+        env:
+          CF_PROJECT_ID: ${{ secrets.CF_PROJECT_ID }}
+          NOTES_PATH: ${{ needs.build.outputs.notes_path }}
+        run: |
+          set -euo pipefail
+          website="$(sed -nE 's/^## X-Website:[[:space:]]*//p' "$TOC")"
+          python3 scripts/curseforge-information/write-release-block.py --version "$VERSION" --notes "$NOTES_PATH" --date "$(date -u +%Y-%m-%d)" \
+            --repo "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" --website "$website" --project-id "$CF_PROJECT_ID"
+      - name: Commit and push README.md
+        if: steps.compare.outputs.readme == 'true'
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -qm "docs(readme): latest release $VERSION" README.md
+          git pull -q --rebase origin "$BRANCH" 2>&1 | sed "s/^/[$LOG_PREFIX] /"
+          git push -q origin "HEAD:refs/heads/$BRANCH" 2>&1 | sed "s/^/[$LOG_PREFIX] /"
+      - name: Write the summary
+        if: steps.compare.outputs.curseforge == 'true'
+        run: |
+          set -euo pipefail
+          blob="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/blob/$GITHUB_REF_NAME"
+          {
+            echo "### CurseForge information update"
+            echo ""
+            echo "| CurseForge field | Update to |"
+            echo "| --- | --- |"
+            if grep -q '\] CHANGED: readme' .tmp/curseforge.log; then
+              echo "| Description | [curseforge-readme.md]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases/download/$GITHUB_REF_NAME/curseforge-readme.md) (made from [README.md]($blob/README.md)) |"
+            fi
+            if grep -q '\] CHANGED: description' .tmp/curseforge.log; then
+              line="$(git show "$GITHUB_REF_NAME:$TOC" | grep -n '^## Notes:' | cut -d: -f1)"
+              text="$(git show "$GITHUB_REF_NAME:$TOC" | sed -nE 's/^## Notes:[[:space:]]*//p')"
+              echo "| Summary | \`$text\` ([$TOC]($blob/$TOC#L$line)) |"
+            fi
+            if grep -q '\] CHANGED: license' .tmp/curseforge.log; then
+              echo "| Project License | \`$(git show "$GITHUB_REF_NAME:LICENSE" | head -n 1)\` ([LICENSE]($blob/LICENSE#L1)) |"
+            fi
+            raw="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/raw/$GITHUB_REF_NAME"
+            media() {
+              sed -nE "s|^\[[^]]*\] CHANGED: media ([AMD])[^ ]* ($1)$|\1 \2|p" .tmp/curseforge.log | while read -r status file; do
+                case "$status" in
+                  D) printf '<li>%s (removed)</li>' "${file##*/}" ;;
+                  A) printf '<li><a href="%s">%s</a> (new)</li>' "$raw/$file" "${file##*/}" ;;
+                  *) printf '<li><a href="%s">%s</a> (changed)</li>' "$raw/$file" "${file##*/}" ;;
+                esac
+              done
+            }
+            images="$(media 'docs/images/.*')"
+            if [ -n "$images" ]; then echo "| Images | <ul>$images</ul> |"; fi
+            if grep -q "\] CHANGED: media [AM] ${TOC%.toc}.tga$" .tmp/curseforge.log; then
+              echo "| Avatar | [curseforge-avatar.png]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases/download/$GITHUB_REF_NAME/curseforge-avatar.png) |"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Remind to paste on CurseForge
+        if: steps.compare.outputs.curseforge == 'true'
+        run: echo "::warning title=Update CurseForge by hand::[$LOG_PREFIX] See 'CurseForge information update' in the summary of this run."
+
+  compare-github:
+    name: 🔍 Compare with .toc
+    env:
+      LOG_PREFIX: Compare with .toc
+    if: github.ref_name == github.event.repository.default_branch && github.event_name != 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - name: Compare GitHub information with the .toc
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/compare-with-toc.py
