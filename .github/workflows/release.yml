@@ -1,0 +1,57 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: "auto follows the commits; patch, minor and major force at least that bump."
+        type: choice
+        options: [auto, patch, minor, major]
+        default: auto
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  checks:
+    name: Checks
+    uses: ./.github/workflows/checks.yml
+
+  release:
+    name: Version and tag
+    needs: checks
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      actions: write
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Tag the release and start Publish
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BUMP: ${{ inputs.bump || 'auto' }}
+        run: |
+          set -euo pipefail
+          tag="$(python3 ./scripts/next-release.py --bump "$BUMP")"
+          if [ -z "$tag" ]; then
+            echo "No feat, fix or breaking commits in \`src/\` since the last release. Nothing to release." | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -qam "chore(release): $tag"
+          git tag "$tag"
+          # Pushes with GITHUB_TOKEN start no workflows, so Publish is started below.
+          git push --atomic origin "HEAD:refs/heads/main" "refs/tags/$tag"
+          gh workflow run publish.yml --ref "$tag"
+          echo "Tagged \`$tag\` and started Publish." | tee -a "$GITHUB_STEP_SUMMARY"
