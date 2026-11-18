@@ -23,6 +23,7 @@ concurrency:
 
 jobs:
   pipeline:
+    name: LuaPad
     uses: jordinbrouwer/wow-addon-ci/.github/workflows/addon.yml@v1
     permissions:
       actions: write
