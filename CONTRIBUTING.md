@@ -18,10 +18,10 @@ Contributions are welcome.
 
 ## Checks
 
-Needs Python 3 and `luacheck`:
+The checks live in [wow-addon-ci](https://github.com/jordinbrouwer/wow-addon-ci). Clone it next to this repository; it needs Python 3 and `luacheck`. From this repository's root:
 
-- `python3 scripts/checks/run.py quick`: fast structural checks.
-- `python3 scripts/checks/run.py`: everything CI runs.
+- `python3 ../wow-addon-ci/scripts/checks/run.py quick`: fast structural checks.
+- `python3 ../wow-addon-ci/scripts/checks/run.py`: everything CI runs.
 
 ## Releases (maintainers)
 
